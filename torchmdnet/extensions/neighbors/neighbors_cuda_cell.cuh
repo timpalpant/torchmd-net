@@ -21,7 +21,7 @@ __host__ __device__ int3 getCellDimensions(scalar3<scalar_t> box_size, scalar_t 
     cell_dim.y = max(cell_dim.y, 3);
     cell_dim.z = max(cell_dim.z, 3);
 // In the host, throw if there are more than 1024 cells in any dimension
-#ifndef __CUDA_ARCH__
+#if 0
     if (cell_dim.x > 1024 || cell_dim.y > 1024 || cell_dim.z > 1024) {
         throw std::runtime_error("Too many cells in one dimension. Maximum is 1024");
     }
