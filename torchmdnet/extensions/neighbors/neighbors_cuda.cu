@@ -25,6 +25,7 @@ forward_impl_cuda(const std::string& strategy, const Tensor& positions, const Te
     } else {
         throw std::runtime_error("Unknown kernel name");
     }
+    std::cout << "positions tensor is " << positions.scalar_type() << std::endl;
     return kernel(positions, batch, in_box_vectors, use_periodic, cutoff_lower, cutoff_upper,
                   max_num_pairs, loop, include_transpose);
 }

@@ -2,6 +2,7 @@
  * Distributed under the MIT License.
  *(See accompanying file README.md file or copy at http://opensource.org/licenses/MIT)
  */
+#include <ATen/autocast_mode.h>
 #include <torch/extension.h>
 #include <tuple>
 
@@ -189,12 +190,36 @@ public:
         auto num_atoms = ctx->saved_data["num_atoms"].toInt();
         auto grad_edge_vec = grad_outputs[1];
         auto grad_edge_weight = grad_outputs[2];
+
+        // If using AMP, upcast the fp16 to fp32 gradients.
+        // Convert FP16 gradients to FP32 before computations
+        if (grad_edge_vec.scalar_type() == at::kHalf) {
+            grad_edge_vec = grad_edge_vec.to(at::kFloat);
+        }
+        if (grad_edge_weight.scalar_type() == at::kHalf) {
+            grad_edge_weight = grad_edge_weight.to(at::kFloat);
+        }
+
+        // Convert cached forward values to FP32 if needed
+        if (edge_vec.scalar_type() == at::kHalf) {
+            edge_vec = edge_vec.to(at::kFloat);
+        }
+        if (edge_weight.scalar_type() == at::kHalf) {
+            edge_weight = edge_weight.to(at::kFloat);
+        }
+        
         static auto backward =
             torch::Dispatcher::singleton()
                 .findSchemaOrThrow("torchmdnet_extensions::get_neighbor_pairs_bkwd", "")
                 .typed<decltype(backward_impl)>();
         auto grad_positions = backward.call(grad_edge_vec, grad_edge_weight, edge_index, edge_vec,
                                             edge_weight, num_atoms);
+        std::cout << "edge_index dtype: " << edge_index.scalar_type() << std::endl;
+        std::cout << "edge_vec dtype: " << edge_vec.scalar_type() << std::endl;
+        std::cout << "edge_weight dtype: " << edge_weight.scalar_type() << std::endl;
+        std::cout << "grad_edge_vec dtype: " << grad_edge_vec.scalar_type() << std::endl;
+        std::cout << "grad_edge_weight dtype: " << grad_edge_weight.scalar_type() << std::endl;
+        std::cout << "grad_positions dtype: " << grad_positions.scalar_type() << std::endl;
         Tensor ignore;
         return {ignore, grad_positions, ignore, ignore, ignore, ignore,
                 ignore, ignore,         ignore, ignore, ignore};
