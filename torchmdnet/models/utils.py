@@ -66,7 +66,7 @@ class NeighborEmbedding(nn.Module):
         See eq. 3 in https://arxiv.org/pdf/2202.02541.pdf for more details.
         """
         super(NeighborEmbedding, self).__init__()
-        self.embedding = nn.Embedding(max_z, hidden_channels, dtype=dtype)
+        self.embedding = nn.Linear(3, hidden_channels, dtype=dtype)
         self.distance_proj = nn.Linear(num_rbf, hidden_channels, dtype=dtype)
         self.combine = nn.Linear(hidden_channels * 2, hidden_channels, dtype=dtype)
         self.cutoff = CosineCutoff(cutoff_lower, cutoff_upper)

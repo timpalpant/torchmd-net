@@ -128,7 +128,7 @@ class TorchMD_T(nn.Module):
         act_class = act_class_mapping[activation]
         attn_act_class = act_class_mapping[attn_activation]
 
-        self.embedding = nn.Embedding(self.max_z, hidden_channels, dtype=dtype)
+        self.embedding = nn.Linear(3, hidden_channels, dtype=dtype)
 
         self.distance = OptimizedDistance(
             cutoff_lower,
