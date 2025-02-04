@@ -693,4 +693,10 @@ act_class_mapping = {
     "mish": nn.Mish,
 }
 
-dtype_mapping = {16: torch.float16, 32: torch.float, 64: torch.float64}
+dtype_mapping = {
+    16: torch.float16,
+    "16-mixed": torch.float,
+    "bf16-mixed": torch.float,
+    32: torch.float,
+    64: torch.float64,
+}
