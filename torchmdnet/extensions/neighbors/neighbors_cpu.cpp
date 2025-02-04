@@ -207,19 +207,13 @@ public:
         if (edge_weight.scalar_type() == at::kHalf) {
             edge_weight = edge_weight.to(at::kFloat);
         }
-        
+
         static auto backward =
             torch::Dispatcher::singleton()
                 .findSchemaOrThrow("torchmdnet_extensions::get_neighbor_pairs_bkwd", "")
                 .typed<decltype(backward_impl)>();
         auto grad_positions = backward.call(grad_edge_vec, grad_edge_weight, edge_index, edge_vec,
                                             edge_weight, num_atoms);
-        std::cout << "edge_index dtype: " << edge_index.scalar_type() << std::endl;
-        std::cout << "edge_vec dtype: " << edge_vec.scalar_type() << std::endl;
-        std::cout << "edge_weight dtype: " << edge_weight.scalar_type() << std::endl;
-        std::cout << "grad_edge_vec dtype: " << grad_edge_vec.scalar_type() << std::endl;
-        std::cout << "grad_edge_weight dtype: " << grad_edge_weight.scalar_type() << std::endl;
-        std::cout << "grad_positions dtype: " << grad_positions.scalar_type() << std::endl;
         Tensor ignore;
         return {ignore, grad_positions, ignore, ignore, ignore, ignore,
                 ignore, ignore,         ignore, ignore, ignore};

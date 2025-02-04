@@ -180,8 +180,6 @@ class LNNP(LightningModule):
         return self.step(batch, [("l1_loss", l1_loss)], "test")
 
     def predict_step(self, batch, batch_idx):
-        batch = self.data_transform(batch)
-
         with torch.set_grad_enabled(self.hparams.derivative):
             extra_args = batch.to_dict()
             for a in ("y", "neg_dy", "z", "pos", "batch", "box", "q", "s"):
@@ -250,7 +248,6 @@ class LNNP(LightningModule):
         #   total_loss: sum of all losses (weighted by the loss weights) for the last loss function in the provided list
         assert len(loss_fn_list) > 0
         assert self.losses is not None
-        batch = self.data_transform(batch)
         with torch.set_grad_enabled(stage == "train" or self.hparams.derivative):
             extra_args = batch.to_dict()
             for a in ("y", "neg_dy", "z", "pos", "batch", "box", "q", "s"):

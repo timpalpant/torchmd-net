@@ -112,7 +112,7 @@ class NeighborEmbedding(nn.Module):
         msg = W * x_neighbors.index_select(0, edge_index[1])
         x_neighbors = torch.zeros(
             z.shape[0], x.shape[1], dtype=x.dtype, device=x.device
-        ).index_add(0, edge_index[0], msg)
+        ).index_add(0, edge_index[0], msg.to(x.dtype))
         x_neighbors = self.combine(torch.cat([x, x_neighbors], dim=1))
         return x_neighbors
 
@@ -623,7 +623,7 @@ class GatedEquivariantBlock(nn.Module):
                     "These atoms will not interact with any other atom unless you change the cutoff."
                 )
             )
-        vec1[mask] = torch.norm(vec1_buffer[mask], dim=-2)
+        vec1[mask] = torch.norm(vec1_buffer[mask], dim=-2).to(vec1.dtype)
 
         vec2 = self.vec2_proj(v)
 
