@@ -5,7 +5,6 @@
  */
 #ifndef NEIGHBORS_COMMON_CUH
 #define NEIGHBORS_COMMON_CUH
-#include <cuda_fp16.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAStream.h>
@@ -35,19 +34,12 @@ inline Accessor<scalar_t, num_dims> get_accessor(const Tensor& tensor) {
     return tensor.packed_accessor32<scalar_t, num_dims, torch::RestrictPtrTraits>();
 };
 
-struct half3 {
-    at::Half x, y, z;
-};
-
 template <typename scalar_t> __device__ __forceinline__ scalar_t sqrt_(scalar_t x){return ::sqrt(x);};
 template <> __device__ __forceinline__ float sqrt_(float x) {
     return ::sqrtf(x);
 };
 template <> __device__ __forceinline__ double sqrt_(double x) {
     return ::sqrt(x);
-};
-template <> __device__ __forceinline__ at::Half sqrt_(at::Half x) {
-    return hsqrt(x);
 };
 
 template <typename scalar_t> struct vec3 {
@@ -60,10 +52,6 @@ template <> struct vec3<float> {
 
 template <> struct vec3<double> {
     using type = double3;
-};
-
-template <> struct vec3<at::Half> {
-    using type = half3;
 };
 
 template <typename scalar_t> using scalar3 = typename vec3<scalar_t>::type;

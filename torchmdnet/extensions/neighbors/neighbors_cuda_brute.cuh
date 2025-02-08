@@ -100,7 +100,7 @@ forward_brute(const Tensor& positions, const Tensor& batch, const Tensor& in_box
     const uint64_t num_all_pairs = num_atoms * (num_atoms - 1UL) / 2UL;
     const uint64_t num_threads = 128;
     const uint64_t num_blocks = std::max(static_cast<uint64_t>((num_all_pairs + num_threads - 1UL) / num_threads), static_cast<uint64_t>(1UL));
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(positions.scalar_type(), "get_neighbor_pairs_forward", [&]() {
+    AT_DISPATCH_FLOATING_TYPES(positions.scalar_type(), "get_neighbor_pairs_forward", [&]() {
         PairListAccessor<scalar_t> list_accessor(list);
         auto box = triclinic::get_box_accessor<scalar_t>(box_vectors, use_periodic);
         const scalar_t cutoff_upper_ = cutoff_upper.to<scalar_t>();
