@@ -453,8 +453,7 @@ class TorchMD_Net(nn.Module):
         Returns:
             Tuple[Tensor, Optional[Tensor]]: The output of the model and the derivative of the output with respect to the positions if derivative is True, None otherwise.
         """
-        assert z.dim() == 1 and z.dtype == torch.long
-        batch = torch.zeros_like(z) if batch is None else batch
+        batch = torch.zeros(len(z), device=z.device, dtype=torch.long) if batch is None else batch
 
         if self.derivative:
             pos.requires_grad_(True)
@@ -491,11 +490,9 @@ class TorchMD_Net(nn.Module):
         # compute gradients with respect to coordinates
 
         if self.derivative:
-            grad_outputs: List[Optional[torch.Tensor]] = [torch.ones_like(y)]
             dy = grad(
-                [y],
-                [pos],
-                grad_outputs=grad_outputs,
+                y.sum(),
+                pos,
                 create_graph=self.training,
                 retain_graph=self.training,
             )[0]

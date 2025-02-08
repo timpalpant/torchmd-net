@@ -108,9 +108,8 @@ class Custom(Dataset):
             torch.from_numpy(np.load(f)) for f in self.files["pos"]
         ]
         self.stored_data["z"] = [
-            torch.from_numpy(np.load(f).astype(int))
-            .unsqueeze(0)
-            .expand(self.stored_data["pos"][i].shape[0], -1)
+            torch.from_numpy(np.load(f))
+            .expand(self.stored_data["pos"][i].shape[0], -1, 3)
             for i, f in enumerate(self.files["z"])
         ]
         if self.has_energies:
@@ -128,8 +127,8 @@ class Custom(Dataset):
         self.stored_data["pos"] = [np.load(f, mmap_mode="r") for f in self.files["pos"]]
         self.stored_data["z"] = []
         for i, f in enumerate(self.files["z"]):
-            loaded_data = np.load(f).astype(int)
-            desired_shape = (len(self.stored_data["pos"][i]), loaded_data.shape[0])
+            loaded_data = np.load(f)
+            desired_shape = (len(self.stored_data["pos"][i]), loaded_data.shape[0], 3)
             broadcasted_data = np.broadcast_to(
                 loaded_data[np.newaxis, :], desired_shape
             )
@@ -153,7 +152,7 @@ class Custom(Dataset):
         total_data_size = 0  # Number of bytes in the dataset
         for i in range(nfiles):
             coord_data = np.load(self.files["pos"][i], mmap_mode="r")
-            embed_data = np.load(self.files["z"][i]).astype(int)
+            embed_data = np.load(self.files["z"][i])
             size = coord_data.shape[0]
             total_data_size += coord_data.nbytes + embed_data.nbytes
             self.index.extend(list(zip([i] * size, range(size))))
