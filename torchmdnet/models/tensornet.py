@@ -236,7 +236,7 @@ class TensorNet(nn.Module):
         # Distance module returns -1 for non-existing edges, to avoid having to resize the tensors when we want to ensure static shapes (for CUDA graphs) we make all non-existing edges pertain to a ghost atom
         # Total charge q is a molecule-wise property. We transform it into an atom-wise property, with all atoms belonging to the same molecule being assigned the same charge q
         if q is None:
-            q = torch.zeros_like(z, device=z.device, dtype=z.dtype)
+            q = torch.zeros(len(z), device=z.device, dtype=z.dtype)
         else:
             q = q[batch]
         zp = z
@@ -397,7 +397,7 @@ def tensor_message_passing(
     """Message passing for tensors."""
     msg = factor * tensor.index_select(0, edge_index[1])
     shape = (natoms, tensor.shape[1], tensor.shape[2], tensor.shape[3])
-    tensor_m = torch.zeros(*shape, device=tensor.device, dtype=tensor.dtype)
+    tensor_m = torch.zeros(*shape, device=msg.device, dtype=msg.dtype)
     tensor_m = tensor_m.index_add(0, edge_index[0], msg)
     return tensor_m
 
