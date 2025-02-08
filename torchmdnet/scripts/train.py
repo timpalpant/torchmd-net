@@ -191,6 +191,7 @@ def main():
 
     pl.seed_everything(args.seed, workers=True)
     torch.set_float32_matmul_precision("high")
+    torch.backends.cuda.matmul.allow_tf32 = True
 
     # initialize data module
     data = DataModule(args)

@@ -17,43 +17,46 @@ __all__ = ["TensorNet"]
 
 def vector_to_skewtensor(vector):
     """Creates a skew-symmetric tensor from a vector."""
-    batch_size = vector.size(0)
+    batch_size = vector.shape[:-1]
     zero = torch.zeros(batch_size, device=vector.device, dtype=vector.dtype)
     tensor = torch.stack(
         (
             zero,
-            -vector[:, 2],
-            vector[:, 1],
-            vector[:, 2],
+            -vector[..., 2],
+            vector[..., 1],
+            vector[..., 2],
             zero,
-            -vector[:, 0],
-            -vector[:, 1],
-            vector[:, 0],
+            -vector[..., 0],
+            -vector[..., 1],
+            vector[..., 0],
             zero,
         ),
-        dim=1,
+        dim=-1,
     )
-    tensor = tensor.view(-1, 3, 3)
+    tensor = tensor.view(*batch_size, 3, 3)
     return tensor.squeeze(0)
 
 
 def vector_to_symtensor(vector):
     """Creates a symmetric traceless tensor from the outer product of a vector with itself."""
     tensor = torch.matmul(vector.unsqueeze(-1), vector.unsqueeze(-2))
-    I = (tensor.diagonal(offset=0, dim1=-1, dim2=-2)).mean(-1)[
-        ..., None, None
-    ] * torch.eye(3, 3, device=tensor.device, dtype=tensor.dtype)
-    S = 0.5 * (tensor + tensor.transpose(-2, -1)) - I
+    S = tensor_to_symtensor(tensor)
+    return S
+
+
+def tensor_to_symtensor(tensor):
+    S = 0.5 * (tensor + tensor.transpose(-2, -1))
+    I = (tensor.diagonal(dim1=-1, dim2=-2)).mean(-1)
+    S.diagonal(dim1=-1, dim2=-2).sub_(I.unsqueeze(-1))
     return S
 
 
 def decompose_tensor(tensor):
     """Full tensor decomposition into irreducible components."""
-    I = (tensor.diagonal(offset=0, dim1=-1, dim2=-2)).mean(-1)[
-        ..., None, None
-    ] * torch.eye(3, 3, device=tensor.device, dtype=tensor.dtype)
     A = 0.5 * (tensor - tensor.transpose(-2, -1))
-    S = 0.5 * (tensor + tensor.transpose(-2, -1)) - I
+    S = tensor - A
+    I = (tensor.diagonal(dim1=-1, dim2=-2)).mean(-1)
+    S.diagonal(dim1=-1, dim2=-2).sub_(I.unsqueeze(-1))
     return I, A, S
 
 
@@ -218,6 +221,15 @@ class TensorNet(nn.Module):
         self.linear.reset_parameters()
         self.out_norm.reset_parameters()
 
+    def output(self, X: Tensor) -> Tensor:
+        I, A, S = decompose_tensor(X)  # shape: (n_atoms, hidden_channels, 3, 3)
+        x = torch.cat(
+            (3 * I**2, tensor_norm(A), tensor_norm(S)), dim=-1
+        )  # shape: (n_atoms, 3*hidden_channels)
+        x = self.out_norm(x)  # shape: (n_atoms, 3*hidden_channels)
+        x = self.act(self.linear((x)))  # shape: (n_atoms, hidden_channels)
+        return x
+
     def forward(
         self,
         z: Tensor,
@@ -252,14 +264,46 @@ class TensorNet(nn.Module):
         X = self.tensor_embedding(zp, edge_index, edge_weight, edge_vec, edge_attr)
         for layer in self.layers:
             X = layer(X, edge_index, edge_weight, edge_attr)
-        I, A, S = decompose_tensor(X)
-        x = torch.cat((tensor_norm(I), tensor_norm(A), tensor_norm(S)), dim=-1)
-        x = self.out_norm(x)
-        x = self.act(self.linear((x)))
+        x = self.output(X)
         # # Remove the extra atom
         if self.static_shapes:
             x = x[:-1]
         return x, None, z, pos, batch
+
+
+class TensorLinear(nn.Module):
+
+    def __init__(self, in_channels, out_channels, dtype=torch.float32):
+        super(TensorLinear, self).__init__()
+        self.linearI = nn.Linear(in_channels, out_channels, bias=False, dtype=dtype)
+        self.linearA = nn.Linear(in_channels, out_channels, bias=False, dtype=dtype)
+        self.linearS = nn.Linear(in_channels, out_channels, bias=False, dtype=dtype)
+
+    def reset_parameters(self):
+        self.linearI.reset_parameters()
+        self.linearA.reset_parameters()
+        self.linearS.reset_parameters()
+
+    def forward(self, X: Tensor, factor: Optional[Tensor] = None) -> Tensor:
+        if factor is None:
+            factor = (
+                torch.ones(1, device=X.device, dtype=X.dtype)
+                .unsqueeze(-1)
+                .unsqueeze(-1)
+            ).expand(-1, -1, 3)
+        I, A, S = decompose_tensor(X)
+        I = self.linearI(I) * factor[..., 0]
+        A = (
+            self.linearA(A.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+            * factor[..., 1, None, None]
+        )
+        S = (
+            self.linearS(S.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+            * factor[..., 2, None, None]
+        )
+        dX = A + S
+        dX.diagonal(dim1=-2, dim2=-1).add_(I.unsqueeze(-1))
+        return dX
 
 
 class TensorEmbedding(nn.Module):
@@ -290,11 +334,7 @@ class TensorEmbedding(nn.Module):
         self.emb = nn.Linear(3, hidden_channels, dtype=dtype)
         self.emb2 = nn.Linear(2 * hidden_channels, hidden_channels, dtype=dtype)
         self.act = activation()
-        self.linears_tensor = nn.ModuleList()
-        for _ in range(3):
-            self.linears_tensor.append(
-                nn.Linear(hidden_channels, hidden_channels, bias=False)
-            )
+        self.linear_tensor = TensorLinear(hidden_channels, hidden_channels)
         self.linears_scalar = nn.ModuleList()
         self.linears_scalar.append(
             nn.Linear(hidden_channels, 2 * hidden_channels, bias=True, dtype=dtype)
@@ -311,88 +351,125 @@ class TensorEmbedding(nn.Module):
         self.distance_proj3.reset_parameters()
         self.emb.reset_parameters()
         self.emb2.reset_parameters()
-        for linear in self.linears_tensor:
-            linear.reset_parameters()
+        self.linear_tensor.reset_parameters()
         for linear in self.linears_scalar:
             linear.reset_parameters()
         self.init_norm.reset_parameters()
 
-    def _get_atomic_number_message(self, z: Tensor, edge_index: Tensor) -> Tensor:
+    def _normalize_edges(
+        self, edge_index: Tensor, edge_weight: Tensor, edge_vec: Tensor
+    ) -> Tensor:
+        mask = edge_index[0] == edge_index[1]
+        # Normalizing edge vectors by their length can result in NaNs, breaking Autograd.
+        # I avoid dividing by zero by setting the weight of self edges and self loops to 1
+        edge_vec = edge_vec / edge_weight.masked_fill(mask, 1).unsqueeze(1)
+        return edge_vec
+
+    def _compute_edge_atomic_features(self, z: Tensor, edge_index: Tensor) -> Tensor:
         Z = self.emb(z)
         Zij = self.emb2(
             Z.index_select(0, edge_index.t().reshape(-1)).view(
                 -1, self.hidden_channels * 2
             )
-        )[..., None, None]
+        )
         return Zij
 
-    def _get_tensor_messages(
-        self, Zij: Tensor, edge_weight: Tensor, edge_vec_norm: Tensor, edge_attr: Tensor
-    ) -> Tuple[Tensor, Tensor, Tensor]:
-        C = self.cutoff(edge_weight).reshape(-1, 1, 1, 1) * Zij
-        eye = torch.eye(3, 3, device=edge_vec_norm.device, dtype=edge_vec_norm.dtype)[
-            None, None, ...
-        ]
-        Iij = self.distance_proj1(edge_attr)[..., None, None] * C * eye
-        Aij = (
-            self.distance_proj2(edge_attr)[..., None, None]
-            * C
-            * vector_to_skewtensor(edge_vec_norm)[..., None, :, :]
-        )
-        Sij = (
+    def _compute_node_tensor_features(
+        self,
+        z: Tensor,
+        edge_index,
+        edge_weight: Tensor,
+        edge_vec: Tensor,
+        edge_attr: Tensor,
+    ) -> Tensor:
+        edge_vec_norm = self._normalize_edges(
+            edge_index, edge_weight, edge_vec
+        )  # shape: (n_edges, 3)
+        Zij = self.cutoff(edge_weight)[:, None] * self._compute_edge_atomic_features(
+            z, edge_index
+        )  # shape: (n_edges, hidden_channels)
+        A = (
+            self.distance_proj2(edge_attr)[
+                ..., None
+            ]  # shape: (n_edges, hidden_channels, 1)
+            * Zij[..., None]  # shape: (n_edges, hidden_channels, 1)
+            * edge_vec_norm[:, None, :]  # shape: (n_edges, 1, 3)
+        )  # shape: (n_edges, hidden_channels, 3)
+        A = self._aggregate_edge_features(
+            z.shape[0], A, edge_index[0]
+        )  # shape: (n_atoms, hidden_channels, 3)
+        A = vector_to_skewtensor(A)  # shape: (n_atoms, hidden_channels, 3, 3)
+        I = self.distance_proj1(edge_attr) * Zij
+        I = self._aggregate_edge_features(z.shape[0], I, edge_index[0])
+        # Outer product of edge vectors
+        tensor = torch.matmul(
+            edge_vec_norm.unsqueeze(-1), edge_vec_norm.unsqueeze(-2)
+        )  # shape: (n_edges, 3, 3)
+        tensor = (
             self.distance_proj3(edge_attr)[..., None, None]
-            * C
-            * vector_to_symtensor(edge_vec_norm)[..., None, :, :]
-        )
-        return Iij, Aij, Sij
+            * Zij[..., None, None]
+            * tensor[..., None, :, :]
+        )  # shape: (n_edges, hidden_channels, 3, 3)
+        tensor = self._aggregate_edge_features(
+            z.shape[0], tensor, edge_index[0]
+        )  # shape: (n_atoms, hidden_channels, 3, 3)
+        S = tensor_to_symtensor(tensor)  # shape: (n_atoms, hidden_channels, 3, 3)
+        features = A + S
+        features.diagonal(dim1=-2, dim2=-1).add_(I.unsqueeze(-1))
+        return features
+
+    def _aggregate_edge_features(
+        self, num_atoms: int, T: Tensor, source_indices: Tensor
+    ) -> Tensor:
+        targetI = torch.zeros(num_atoms, *T.shape[1:], device=T.device, dtype=T.dtype)
+        I = targetI.index_add(dim=0, index=source_indices, source=T)
+        return I
+
+    def _norm_mlp(self, norm):
+        norm = self.init_norm(norm)
+        for linear_scalar in self.linears_scalar:
+            norm = self.act(linear_scalar(norm))
+        norm = norm.reshape(-1, self.hidden_channels, 3)
+        return norm
 
     def forward(
         self,
         z: Tensor,
         edge_index: Tensor,
         edge_weight: Tensor,
-        edge_vec_norm: Tensor,
+        edge_vec: Tensor,
         edge_attr: Tensor,
     ) -> Tensor:
-        Zij = self._get_atomic_number_message(z, edge_index)
-        Iij, Aij, Sij = self._get_tensor_messages(
-            Zij, edge_weight, edge_vec_norm, edge_attr
-        )
-        source = torch.zeros(
-            z.shape[0], self.hidden_channels, 3, 3, device=z.device, dtype=Iij.dtype
-        )
-        I = source.index_add(dim=0, index=edge_index[0], source=Iij)
-        A = source.index_add(dim=0, index=edge_index[0], source=Aij)
-        S = source.index_add(dim=0, index=edge_index[0], source=Sij)
-        norm = self.init_norm(tensor_norm(I + A + S))
-        for linear_scalar in self.linears_scalar:
-            norm = self.act(linear_scalar(norm))
-        norm = norm.reshape(-1, self.hidden_channels, 3)
-        I = (
-            self.linears_tensor[0](I.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-            * norm[..., 0, None, None]
-        )
-        A = (
-            self.linears_tensor[1](A.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-            * norm[..., 1, None, None]
-        )
-        S = (
-            self.linears_tensor[2](S.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-            * norm[..., 2, None, None]
-        )
-        X = I + A + S
+        X = self._compute_node_tensor_features(
+            z, edge_index, edge_weight, edge_vec, edge_attr
+        )  # shape: (n_atoms, hidden_channels, 3, 3)
+        norm = self._norm_mlp(tensor_norm(X))  # shape: (n_atoms, hidden_channels)
+        X = self.linear_tensor(X, norm)  # shape: (n_atoms, hidden_channels, 3, 3)
         return X
 
 
-def tensor_message_passing(
-    edge_index: Tensor, factor: Tensor, tensor: Tensor, natoms: int
-) -> Tensor:
-    """Message passing for tensors."""
-    msg = factor * tensor.index_select(0, edge_index[1])
-    shape = (natoms, tensor.shape[1], tensor.shape[2], tensor.shape[3])
-    tensor_m = torch.zeros(*shape, device=msg.device, dtype=msg.dtype)
+def compute_tensor_edge_features(X, edge_index, factor):
+    I, A, S = decompose_tensor(X)
+    msg = factor[..., 1, None, None] * A.index_select(0, edge_index[1]) + factor[
+        ..., 2, None, None
+    ] * S.index_select(0, edge_index[1])
+    msg.diagonal(dim1=-2, dim2=-1).add_(
+        factor[..., 0, None] * I.index_select(0, edge_index[1]).unsqueeze(-1)
+    )
+    return msg
+
+
+def tensor_message_passing(n_atoms: int, edge_index: Tensor, tensor: Tensor) -> Tensor:
+    msg = tensor.index_select(
+        0, edge_index[1]
+    )  # shape = (n_edges, hidden_channels, 3, 3)
+    tensor_m = torch.zeros(
+        (n_atoms, tensor.shape[1], tensor.shape[2], tensor.shape[3]),
+        device=tensor.device,
+        dtype=tensor.dtype,
+    )
     tensor_m = tensor_m.index_add(0, edge_index[0], msg)
-    return tensor_m
+    return tensor_m  # shape = (n_atoms, hidden_channels, 3, 3)
 
 
 class Interaction(nn.Module):
@@ -426,11 +503,8 @@ class Interaction(nn.Module):
         self.linears_scalar.append(
             nn.Linear(2 * hidden_channels, 3 * hidden_channels, bias=True, dtype=dtype)
         )
-        self.linears_tensor = nn.ModuleList()
-        for _ in range(6):
-            self.linears_tensor.append(
-                nn.Linear(hidden_channels, hidden_channels, bias=False)
-            )
+        self.tensor_linear_in = TensorLinear(hidden_channels, hidden_channels)
+        self.tensor_linear_out = TensorLinear(hidden_channels, hidden_channels)
         self.act = activation()
         self.equivariance_invariance_group = equivariance_invariance_group
         self.reset_parameters()
@@ -438,8 +512,29 @@ class Interaction(nn.Module):
     def reset_parameters(self):
         for linear in self.linears_scalar:
             linear.reset_parameters()
-        for linear in self.linears_tensor:
-            linear.reset_parameters()
+        self.tensor_linear_in.reset_parameters()
+        self.tensor_linear_out.reset_parameters()
+
+    def _update_tensor_node_features(self, X, X_aggregated):
+        X = self.tensor_linear_in(X)
+        B = torch.matmul(X, X_aggregated)
+        if self.equivariance_invariance_group == "O(3)":
+            A = torch.matmul(X_aggregated, X)
+        elif self.equivariance_invariance_group == "SO(3)":
+            A = B
+        else:
+            raise ValueError("Unknown equivariance group")
+        Xnew = A + B
+        return Xnew
+
+    def _compute_vector_node_features(self, edge_attr, edge_weight):
+        C = self.cutoff(edge_weight)
+        for linear_scalar in self.linears_scalar:
+            edge_attr = self.act(linear_scalar(edge_attr))
+        edge_attr = (edge_attr * C.view(-1, 1)).reshape(
+            edge_attr.shape[0], self.hidden_channels, 3
+        )
+        return edge_attr
 
     def forward(
         self,
@@ -448,40 +543,25 @@ class Interaction(nn.Module):
         edge_weight: Tensor,
         edge_attr: Tensor,
     ) -> Tensor:
-        C = self.cutoff(edge_weight)
-        for linear_scalar in self.linears_scalar:
-            edge_attr = self.act(linear_scalar(edge_attr))
-        edge_attr = (edge_attr * C.view(-1, 1)).reshape(
-            edge_attr.shape[0], self.hidden_channels, 3
-        )
-        X = X / (tensor_norm(X) + 1)[..., None, None]
-        I, A, S = decompose_tensor(X)
-        I = self.linears_tensor[0](I.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        A = self.linears_tensor[1](A.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        S = self.linears_tensor[2](S.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        Y = I + A + S
-        Im = tensor_message_passing(
-            edge_index, edge_attr[..., 0, None, None], I, X.shape[0]
-        )
-        Am = tensor_message_passing(
-            edge_index, edge_attr[..., 1, None, None], A, X.shape[0]
-        )
-        Sm = tensor_message_passing(
-            edge_index, edge_attr[..., 2, None, None], S, X.shape[0]
-        )
-        msg = Im + Am + Sm
-        if self.equivariance_invariance_group == "O(3)":
-            A = torch.matmul(msg, Y)
-            B = torch.matmul(Y, msg)
-            I, A, S = decompose_tensor(A + B)
-        if self.equivariance_invariance_group == "SO(3)":
-            B = torch.matmul(Y, msg)
-            I, A, S = decompose_tensor(2 * B)
-        normp1 = (tensor_norm(I + A + S) + 1)[..., None, None]
-        I, A, S = I / normp1, A / normp1, S / normp1
-        I = self.linears_tensor[3](I.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        A = self.linears_tensor[4](A.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        S = self.linears_tensor[5](S.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        dX = I + A + S
-        X = X + dX + torch.matrix_power(dX, 2)
+        X = (
+            X / (tensor_norm(X) + 1)[..., None, None]
+        )  # shape (n_atoms, hidden_channels, 3, 3)
+        node_features = self._compute_vector_node_features(
+            edge_attr, edge_weight
+        )  # shape (n_edges, hidden_channels, 3)
+        Y_edges = compute_tensor_edge_features(
+            X, edge_index, node_features
+        )  # shape (n_edges, hidden_channels, 3, 3)
+        Y_aggregated = tensor_message_passing(
+            X.shape[0], edge_index, Y_edges
+        )  # shape (n_atoms, hidden_channels, 3, 3)
+        Xnew = self._update_tensor_node_features(
+            X, Y_aggregated
+        )  # shape (n_atoms, hidden_channels, 3, 3)
+        dX = self.tensor_linear_out(
+            Xnew / (tensor_norm(Xnew) + 1)[..., None, None]
+        )  # shape (n_atoms, hidden_channels, 3, 3)
+        X = (
+            X + (dX + torch.matrix_power(dX, 2))
+        )  # shape (n_atoms, hidden_channels, 3, 3)
         return X
